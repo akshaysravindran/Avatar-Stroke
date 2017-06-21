@@ -1,6 +1,8 @@
 # Trial object is all information in one trial. Each subject should have 8 trials (4 days * 2 per day)
 import os
 import numpy as np
+import mne
+from parseImpedance import parseImpedance
 
 class Trial:
     filePath = ''  # file path of the folder
@@ -13,6 +15,10 @@ class Trial:
     eegFile = -1  # raw eeg file
     decoderFile = -1  # raw decoder file
     conductorFile = -1  # raw conductor file
+    impedanceBefore = -1
+    impedanceAfter = -1
+    locationFile = -1 # 60Ch_EOGlayout.locs
+    impedanceRemove = -1
 
     def __init__(self, subID, triID):
         # sanity check
@@ -59,6 +65,27 @@ class Trial:
                 self.fileID = f[-8:-4]
                 break
 
+
     def readDecoder(self):
         self.decoderFile = np.loadtxt(self.filePath + self.date + '_decoder_' + self.fileID + '.txt', skiprows=1)
+
+
+    def readImpedance(self):
+        try:
+            self.triID % 2 == 1
+        except EnvironmentError:
+            print 'This trial does not contain impedance records'
+        allFiles = os.listdir(self.filePath)
+        for f in allFiles:
+            if f[-9:-4]=='after':
+                self.impedanceAfter = parseImpedance(self.filePath+f)
+            if f[-10:-4]=='before':
+                self.impedanceBefore = parseImpedance(self.filePath+f)
+        # Remove this six channels from impedance recording
+        # 17,22,41,46 are EOG, 65 and 66 are GND and REF
+        self.impedanceRemove = [17, 22, 41, 46, 65, 66]
+
+
+    def readChannelLocation(self):
+        self.locationFile = mne.channels.read_montage(kind='60Ch_EOGlayout', path='resources/')
 
