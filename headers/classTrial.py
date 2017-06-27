@@ -17,8 +17,9 @@ class Trial:
     conductorFile = -1  # raw conductor file
     impedanceBefore = -1
     impedanceAfter = -1
-    locationFile = -1 # 60Ch_EOGlayout.locs
+    # locationFile = -1 # 60Ch_EOGlayout.locs
     impedanceRemove = -1
+    info = -1
 
     def __init__(self, subID, triID):
         # sanity check
@@ -75,17 +76,29 @@ class Trial:
             self.triID % 2 == 1
         except EnvironmentError:
             print 'This trial does not contain impedance records'
+
+        # Remove this six channels from impedance recording
+        # 17,22,41,46 are EOG, 65 and 66 are GND and REF
+        # when used in numpy, they need to shift by 1!!!!
+        self.impedanceRemove = np.array([17, 22, 41, 46, 65, 66])
+
         allFiles = os.listdir(self.filePath)
         for f in allFiles:
             if f[-9:-4]=='after':
-                self.impedanceAfter = parseImpedance(self.filePath+f)
+                # read file and remove 6 non-EEG channels
+                tempImpedance = np.delete(parseImpedance(self.filePath+f), self.impedanceRemove-1)
+                # replace NaN by a big value (60, which is vmax)
+                tempImpedance[np.isnan(tempImpedance)] = 60
+                self.impedanceAfter = tempImpedance
             if f[-10:-4]=='before':
-                self.impedanceBefore = parseImpedance(self.filePath+f)
-        # Remove this six channels from impedance recording
-        # 17,22,41,46 are EOG, 65 and 66 are GND and REF
-        self.impedanceRemove = [17, 22, 41, 46, 65, 66]
+                # read file and remove 6 non-EEG channels
+                tempImpedance = np.delete(parseImpedance(self.filePath + f), self.impedanceRemove - 1)
+                # replace NaN by a super big value (100)
+                tempImpedance[np.isnan(tempImpedance)] = 60
+                self.impedanceBefore = tempImpedance
 
 
     def readChannelLocation(self):
-        self.locationFile = mne.channels.read_montage(kind='60Ch_EOGlayout', path='resources/')
-
+        # this info object only contains 60 channels, which are all EEG data
+        readMontage = mne.channels.read_montage(kind='60Ch_EOGlayout', path='resources/')
+        self.info = mne.create_info(readMontage.ch_names, 100, ch_types='eeg', montage=readMontage)
