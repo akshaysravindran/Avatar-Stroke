@@ -4,7 +4,7 @@ import numpy as np
 # v1 and v2 are both numpy vectors
 # winLen is a positive integer
 # r_fs is the window moving interval. If r_fs=1, the windows moves by every sample.
-def windowed_R(v1, v2, winLen, r_fs):
+def rolling_r_value(v1, v2, winLen, r_fs):
     try:
         (v1.shape == [0, 1] or [1, 0]) and (v2.shape == [0, 1] or [1, 0])
     except ValueError:

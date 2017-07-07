@@ -1,8 +1,8 @@
 import matplotlib.pyplot as plt
 import statsmodels.api as sm  # for some reason also need to install patsy
 
-from headers.classTrial import Trial
-from headers.windowed_R import windowed_R  # a small function to compute rolling r value
+from asp.load import Trial
+from asp.rolling_r_value import rolling_r_value  # a small function to compute rolling r value
 
 # ------ parameters ------
 winLen = 1000
@@ -17,7 +17,7 @@ for trialId in range(1,9):
     t = Trial(1, trialId)
     t.readDecoder()
 
-    r = windowed_R(t.decoderFile[:,1], t.decoderFile[:,7], winLen, r_fs)
+    r = rolling_r_value(t.decoderFile[:,1], t.decoderFile[:,7], winLen, r_fs)
     # -- the old way to create time series in x-axis is purely
     # through the sampling rate and protocol. However, the sampling
     # rate is about 86Hz rather than 100. So it's better to use the

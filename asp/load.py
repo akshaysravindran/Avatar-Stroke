@@ -2,7 +2,13 @@
 import os
 import numpy as np
 import mne
-from parseImpedance import parseImpedance
+from detect_peaks import detect_peaks
+
+def parseImpedance(filename):
+    filedata = np.genfromtxt(filename, skip_header=23, comments='$', skip_footer=2) # default comment is # mark, which is used in the file
+    filedata_lastTwoRow = np.genfromtxt(filename, skip_header=87, comments='$')
+    impedance = np.concatenate((filedata[:,6], filedata_lastTwoRow[:,4]),axis=0)
+    return impedance
 
 class Trial:
     filePath = ''  # file path of the folder
@@ -20,6 +26,7 @@ class Trial:
     # locationFile = -1 # 60Ch_EOGlayout.locs
     impedanceRemove = -1
     info = -1
+    gaitSegments_rmOutliers = -1 # gait cycles. each row contains the starting and ending time of one cycle
 
     def __init__(self, subID, triID):
         # sanity check
@@ -70,6 +77,10 @@ class Trial:
     def readDecoder(self):
         self.decoderFile = np.loadtxt(self.filePath + self.date + '_decoder_' + self.fileID + '.txt', skiprows=1)
 
+        
+    def readEEG(self):
+        self.eegFile = np.loadtxt(self.filePath + self.date + '_eeg_' + self.fileID + '.txt', skiprows=1)
+         
 
     def readImpedance(self):
         try:
@@ -102,3 +113,30 @@ class Trial:
         # this info object only contains 60 channels, which are all EEG data
         readMontage = mne.channels.read_montage(kind='60Ch_EOGlayout', path='resources/')
         self.info = mne.create_info(readMontage.ch_names, 100, ch_types='eeg', montage=readMontage)
+
+
+    def gaitSegmentation(self, check = False):
+        # find peaks and identify adnormal intervals
+        peaks = detect_peaks(self.decoderFile[:,2], mph=30, mpd=100, valley=True, show=check)
+        peakDiff = np.diff(peaks)
+        peakMean = np.mean(peakDiff[20:-15])
+        peakStd = np.std(peakDiff[20:-15])
+        peakOutlierIdx = np.where( (peakDiff>peakMean+peakStd*3) | (peakDiff<peakMean-peakStd*3) )
+        # turn peaks into segments, and remove outlier segments
+        gaitSegments = np.zeros((len(peaks)-1,2))
+        for i in range(0,len(gaitSegments)):
+            gaitSegments[i,0] = peaks[i]
+            gaitSegments[i,1] = peaks[i+1]
+        mask = np.ones(len(peaks)-1, dtype=bool)
+        mask[peakOutlierIdx] = False
+        self.gaitSegments_rmOutliers = gaitSegments[mask,...]
+        # console print
+        if check==True:
+            if len(peakOutlierIdx)==0:
+                print '--- No outlier peaks ---'
+            else:
+                print 'Outlier peaks (outside 3 std range) are:', peakOutlierIdx[0]
+                print 'peakDiffMean = ' + str(peakMean)
+                print 'peakDiffStd = ' + str(peakStd)
+
+
