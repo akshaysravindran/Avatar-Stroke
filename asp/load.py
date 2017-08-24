@@ -2,7 +2,12 @@
 import os
 import numpy as np
 import mne
+import matplotlib.pyplot as plt
 from detect_peaks import detect_peaks
+from asp.spectrogram import spectrogram_timewrap
+from asp.rolling_r_value import rolling_r_value  # a small function to compute rolling r value
+import statsmodels.api as sm  # for some reason also need to install patsy
+from numpy import cos, sin, pi
 
 def parseImpedance(filename):
     filedata = np.genfromtxt(filename, skip_header=23, comments='$', skip_footer=2) # default comment is # mark, which is used in the file
@@ -18,6 +23,7 @@ class Trial:
     fileID = -1  # four digit sequence like 0001
     subIDStr = ''
     triIDStr = ''
+    fs = 100
     eegFile = -1  # raw eeg file
     decoderFile = -1  # raw decoder file
     conductorFile = -1  # raw conductor file
@@ -27,6 +33,13 @@ class Trial:
     impedanceRemove = -1
     info = -1
     gaitSegments_rmOutliers = -1 # gait cycles. each row contains the starting and ending time of one cycle
+    gaitSpecgramMean = -1
+    gaitSpecgramMeanFreqs = -1
+    rCurveHip = -1 # regressed curve of the windowed r values
+    rCurveKnee = -1 
+    rCurveAnkle = -1
+    heel = -1 # trajectory of the heel in sagittal plane. 
+    events = -1 # a dict with four times: treadmill starts, brain control starts, brain control ends, treadmill ends 
 
     def __init__(self, subID, triID):
         # sanity check
@@ -80,7 +93,16 @@ class Trial:
         
     def readEEG(self):
         self.eegFile = np.loadtxt(self.filePath + self.date + '_eeg_' + self.fileID + '.txt', skiprows=1)
-         
+    
+    def readConductor(self):
+        self.conductorFile = np.loadtxt(self.filePath + self.date + '_conductor_' + self.fileID + '.txt', skiprows=2)
+        tdmStart = self.conductorFile [np.where(self.conductorFile[:,1]==8)[0][0], 0]
+        brainStart = self.conductorFile [np.where(self.conductorFile[:,1]==8)[0][1], 0]
+        brainEnd= self.conductorFile [np.where(self.conductorFile[:,1]==10)[0][1], 0]
+        triEnd= self.conductorFile [np.where(self.conductorFile[:,1]==9)[0][0], 0]
+        self.events = {'tdmStart':tdmStart, 'brainStart': brainStart, 'brainEnd': brainEnd, 'triEnd': triEnd}
+        # for example, events = 30 450 750 780
+        
 
     def readImpedance(self):
         try:
@@ -112,7 +134,7 @@ class Trial:
     def readChannelLocation(self):
         # this info object only contains 60 channels, which are all EEG data
         readMontage = mne.channels.read_montage(kind='60Ch_EOGlayout', path='resources/')
-        self.info = mne.create_info(readMontage.ch_names, 100, ch_types='eeg', montage=readMontage)
+        self.info = mne.create_info(readMontage.ch_names, self.fs, ch_types='eeg', montage=readMontage)
 
 
     def gaitSegmentation(self, check = False):
@@ -139,4 +161,94 @@ class Trial:
                 print 'peakDiffMean = ' + str(peakMean)
                 print 'peakDiffStd = ' + str(peakStd)
 
+    def gaitSpecgrams(self, channel, mode, ):
+    # each gait is an epoch, which has a spectrogram
+    # these spectrograms are time-warpped into same length (100)
+    # mode can be EEG or ICA
+    # channel indicates which channel to plot. EEG channel k is indexed as k-1 in python, which is actually channel k in eegFile
+    
+        NFFT = 32
+        
+        # initialize epoch_specgrams
+        temp = spectrogram_timewrap(self.eegFile[1000:1160,2], np.linspace(0,10,100)) # generate some random plot for its size
+        tempSpecgram = temp[0]
+        epoch_specgrams = np.zeros([tempSpecgram.shape[0], tempSpecgram.shape[1], self.gaitSegments_rmOutliers.shape[0]])
+        
+        # compute specgram in each epoch
+        plt.ioff()
+        #for i in range(0, self.gaitSegments_rmOutliers.shape[0]):
+        for i in range(0, 10):
+            if mode=='EEG':
+                vec = self.eegFile[int(self.gaitSegments_rmOutliers[i,0]):int(self.gaitSegments_rmOutliers[i,1]),channel]
+            #if mode=='ICA':
+                # do something. load self.ICAfile
+            new_bins = np.linspace(0, (len(vec)-NFFT/2)/float(self.fs), 100)
+            result = spectrogram_timewrap(vec, new_bins, NFFT=NFFT, Fs=self.fs, noverlap=24)
+            epoch_specgrams[:,:,i] = result[0] - np.repeat(np.mean(result[0],1, keepdims=True), 100, axis=1) # remove the mean
+            print 'Working on gaitSpecgram() iteration '+ str(i) 
+        plt.show()
+        plt.ion()
+        # specgram averaged over all gait cycles
+        self.gaitSpecgramMean = np.mean(epoch_specgrams, 2)
+        self.gaitSpecgramMeanFreqs = result[1]   
+        
+        
+    def fitRcurve(self, joint):
+    # Summary: fit a curve of the windowed r values in a trial
+    # Prerequisit: t.events
+    # Input: joint is a string of either 'hip', 'knee', or 'ankle'
+    # Output: The returned array (such as rCurveHip) is two-dimensional array. The first column contains time in minutes, and the second column the associated estimated y values.
+    # Date: 
+        try:
+            joint=='hip' or joint=='knee' or joint=='ankle'
+        except ValueError:
+            print 'Wrong joint to fit r curve.'
+                
+        if joint=='hip':
+            jointId = 0
+        elif joint=='knee':
+            jointId = 1
+        elif joint=='ankle':
+            jointId = 2
+        
+        winLen = 1000
+        r_fs = 500
+        r = rolling_r_value(self.decoderFile[:,1+jointId], self.decoderFile[:,7+jointId], winLen, r_fs)
+        r_time = self.decoderFile[0:-winLen:r_fs, 0].copy() - self.events['brainStart']
+        #pick a sample every r_fs samples
 
+        # curve fitting
+        if joint=='hip': 
+            self.rCurveHip = sm.nonparametric.lowess(r, r_time/60.0, frac=0.3)
+        if joint=='knee': 
+            self.rCurveKnee = sm.nonparametric.lowess(r, r_time/60.0, frac=0.3)
+        if joint=='ankle': 
+            self.rCurveAnkle = sm.nonparametric.lowess(r, r_time/60.0, frac=0.3)
+            
+    def heelTrajectory(self):
+        bodySize = [332,391,50,-50]
+        self.heel = np.zeros((self.decoderFile.shape[0], 2))
+
+        l1 = bodySize[0]    #mm Length of thigh from hip joint to knee joint.
+        l2 = bodySize[1]    #mm Length of shank from knee joint to ankle joint.
+        xp4 = bodySize[2]   #mm Length of foot from ankle joint to ground (vertical component when standing
+        yp4 = bodySize[3]   #mm Distance from ankle joint to heel in the horizontal direction.
+        #lengthToe = 100    #mm Distance from ankle joint to toe in the horizontal direction.
+        h = self.decoderFile[:,1]*np.pi/180
+        k = self.decoderFile[:,2]*np.pi/180
+        a = self.decoderFile[:,3]*np.pi/180
+        self.heel[:,0] = yp4*cos(a + h + k) + xp4*sin(a + h + k) + l1*sin(h) + l2*sin(h + k)
+        self.heel[:,1] = yp4*sin(a + h +k) - xp4*cos(a + h + k) - l1*cos(h) - l2*cos(h + k)
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
