@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from detect_peaks import detect_peaks
 from asp.spectrogram import spectrogram_timewrap
 from asp.rolling_r_value import rolling_r_value  # a small function to compute rolling r value
+from asp.cutArray import cutArray
 import statsmodels.api as sm  # for some reason also need to install patsy
 from numpy import cos, sin, pi
 
@@ -16,37 +17,40 @@ def parseImpedance(filename):
     return impedance
 
 class Trial:
-    filePath = ''  # file path of the folder
-    subID = -1
-    triID = -1
-    date = -1  # eg. 2017_6_7
-    fileID = -1  # four digit sequence like 0001
-    subIDStr = ''
-    triIDStr = ''
-    fs = 100
-    eegFile = -1  # raw eeg file
-    decoderFile = -1  # raw decoder file
-    conductorFile = -1  # raw conductor file
-    impedanceBefore = -1
-    impedanceAfter = -1
-    # locationFile = -1 # 60Ch_EOGlayout.locs
-    impedanceRemove = -1
-    info = -1
-    gaitSegments_rmOutliers = -1 # gait cycles. each row contains the starting and ending time of one cycle
-    gaitSpecgramMean = -1
-    gaitSpecgramMeanFreqs = -1
-    rCurveHip = -1 # regressed curve of the windowed r values
-    rCurveKnee = -1 
-    rCurveAnkle = -1
-    heel = -1 # trajectory of the heel in sagittal plane. 
-    events = -1 # a dict with four times: treadmill starts, brain control starts, brain control ends, treadmill ends 
-
     def __init__(self, subID, triID):
+        self.filePath = ''  # file path of the folder
+        self.subID = -1
+        self.triID = -1
+        self.date = -1  # eg. 2017_6_7
+        self.fileID = -1  # four digit sequence like 0001
+        self.subIDStr = ''
+        self.triIDStr = ''
+        self.fs = 100
+        self.eegFile = -1  # raw eeg file
+        self.decoderFile = -1  # raw decoder file
+        self.conductorFile = -1  # raw conductor file
+        self.impedanceBefore = -1
+        self.impedanceAfter = -1
+        # self.locationFile = -1 # 60Ch_EOGlayout.locs
+        self.impedanceRemove = -1
+        self.info = -1
+        self.gaitSegments_rmOutliers = -1 # gait cycles. each row contains the starting and ending time of one cycle
+        self.gaitSpecgramMean = -1
+        self.gaitSpecgramMeanFreqs = -1
+        self.rCurveHip = -1 # regressed curve of the windowed r values
+        self.rCurveKnee = -1 
+        self.rCurveAnkle = -1
+        self.rRightHipByGait = self.rRightKneeByGait = self.rRightAnkleByGait = self.rLeftHipByGait = self.rLeftKneeByGait = self.rLeftAnkleByGait = -1
+        self.rAllJointByGait = -1
+        self.rTrain = self.rTest = self.rTrainMean = self.rTestMean = self.rTrainMedian = self.rTestMedian = -1
+        self.heel = -1 # trajectory of the heel in sagittal plane. 
+        self.events = -1 # a dict with four times: treadmill starts, brain control starts, brain control ends, treadmill ends 
         # sanity check
         try:
             0 < subID < 100
         except ValueError:
             print 'subID wrong value.'
+                
         try:
             0 < triID < 9
         except ValueError:
@@ -92,7 +96,11 @@ class Trial:
 
         
     def readEEG(self):
+        self.readChannelLocation() # creates info structure
         self.eegFile = np.loadtxt(self.filePath + self.date + '_eeg_' + self.fileID + '.txt', skiprows=1)
+        # remove EOG channels to match the info 
+        # the first column in eegfile is time. the four eog channel's index count from 1. Together, they balance out.
+        self.eeg = np.delete(self.eegFile, np.array([17, 22, 41, 46]), 1)
     
     def readConductor(self):
         self.conductorFile = np.loadtxt(self.filePath + self.date + '_conductor_' + self.fileID + '.txt', skiprows=2)
@@ -191,39 +199,99 @@ class Trial:
         # specgram averaged over all gait cycles
         self.gaitSpecgramMean = np.mean(epoch_specgrams, 2)
         self.gaitSpecgramMeanFreqs = result[1]   
+    
+    def RValueByGait(self, side, joint):
+    # Summary: compute a r-value within each gait cycle
+    # Prerequisit: t.events, gaitSegmentation()
+    # Input: joint is a string of either 'hip', 'knee', or 'ankle'
+    # Output: 
+    # Date: 2017/12/12
+        try:
+            (joint=='hip' or joint=='knee' or joint=='ankle') and (side=='left' or side=='right')
+        except ValueError:
+            print 'Wrong input options in RvalueByGait()'
         
+        if side=='right':
+            if joint=='hip':
+                decoderChan = 1
+            elif joint=='knee':
+                decoderChan = 2
+            elif joint=='ankle':
+                decoderChan = 3
+        elif side=='left':
+            if joint=='hip':
+                decoderChan = 4
+            elif joint=='knee':
+                decoderChan = 5
+            elif joint=='ankle':
+                decoderChan = 6
+                
+        result = np.zeros((self.gaitSegments_rmOutliers.shape[0], 2)) # two column: time in minute and r-value
+        for gaitId in range(self.gaitSegments_rmOutliers.shape[0]):
+            measured =  self.decoderFile[int(self.gaitSegments_rmOutliers[gaitId,0]):int(self.gaitSegments_rmOutliers[gaitId,1]), decoderChan]
+            predicted = self.decoderFile[int(self.gaitSegments_rmOutliers[gaitId,0]):int(self.gaitSegments_rmOutliers[gaitId,1]), decoderChan+6]
+            result[gaitId, 1] = np.corrcoef(measured, predicted)[0, 1]
+            result[gaitId, 0] = self.decoderFile[int((self.gaitSegments_rmOutliers[gaitId, 0]+self.gaitSegments_rmOutliers[gaitId, 1])/2), 0]
         
-    def fitRcurve(self, joint):
+        if side=='right':
+            if joint=='hip':
+                self.rRightHipByGait = result
+            elif joint=='knee':
+                self.rRightKneeByGait = result
+            elif joint=='ankle':
+                self.rRightAnkleByGait = result
+        elif side=='left':
+            if joint=='hip':
+                self.rLeftHipByGait = result
+            elif joint=='knee':
+                self.rLeftKneeByGait = result
+            elif joint=='ankle':
+                self.rLeftAnkleByGait = result
+    
+    def RValueByGaitAllJoint(self):
+    # Summary: create a 7-col matrix. First column is time in min, the rest are the r value in six joints.
+    # This is just a shortcut of running six individual RValueByGait()
+        self.RValueByGait('right','hip')
+        self.RValueByGait('right','knee')
+        self.RValueByGait('right','ankle')
+        self.RValueByGait('left','hip')
+        self.RValueByGait('left','knee')
+        self.RValueByGait('left','ankle')
+        self.rAllJointByGait = np.concatenate((self.rRightHipByGait, self.rRightKneeByGait[:,1].reshape((-1,1)), self.rRightAnkleByGait[:,1].reshape((-1,1)), self.rLeftHipByGait[:,1].reshape((-1,1)), self.rLeftKneeByGait[:,1].reshape((-1,1)), self.rLeftAnkleByGait[:,1].reshape((-1,1))), axis=1)    
+        
+    # def fitRcurve(self, joint):
     # Summary: fit a curve of the windowed r values in a trial
     # Prerequisit: t.events
     # Input: joint is a string of either 'hip', 'knee', or 'ankle'
     # Output: The returned array (such as rCurveHip) is two-dimensional array. The first column contains time in minutes, and the second column the associated estimated y values.
     # Date: 
-        try:
-            joint=='hip' or joint=='knee' or joint=='ankle'
-        except ValueError:
-            print 'Wrong joint to fit r curve.'
+        # try:
+            # joint=='hip' or joint=='knee' or joint=='ankle'
+        # except ValueError:
+            # print 'Wrong joint to fit r curve.'
                 
-        if joint=='hip':
-            jointId = 0
-        elif joint=='knee':
-            jointId = 1
-        elif joint=='ankle':
-            jointId = 2
+        # if joint=='hip':
+            # jointId = 0
+        # elif joint=='knee':
+            # jointId = 1
+        # elif joint=='ankle':
+            # jointId = 2
         
-        winLen = 1000
-        r_fs = 500
-        r = rolling_r_value(self.decoderFile[:,1+jointId], self.decoderFile[:,7+jointId], winLen, r_fs)
-        r_time = self.decoderFile[0:-winLen:r_fs, 0].copy() - self.events['brainStart']
-        #pick a sample every r_fs samples
+        # winLen = 1000
+        # r_fs = 500
+        # r = rolling_r_value(self.decoderFile[:,1+jointId], self.decoderFile[:,7+jointId], winLen, r_fs)
+        # r_time = self.decoderFile[0:-winLen:r_fs, 0].copy() - self.events['brainStart']
+        # #pick a sample every r_fs samples
 
-        # curve fitting
-        if joint=='hip': 
-            self.rCurveHip = sm.nonparametric.lowess(r, r_time/60.0, frac=0.3)
-        if joint=='knee': 
-            self.rCurveKnee = sm.nonparametric.lowess(r, r_time/60.0, frac=0.3)
-        if joint=='ankle': 
-            self.rCurveAnkle = sm.nonparametric.lowess(r, r_time/60.0, frac=0.3)
+        # # curve fitting
+        # if joint=='hip': 
+            # self.rCurveHip = sm.nonparametric.lowess(r, r_time/60.0, frac=0.3)
+        # if joint=='knee': 
+            # self.rCurveKnee = sm.nonparametric.lowess(r, r_time/60.0, frac=0.3)
+        # if joint=='ankle': 
+            # self.rCurveAnkle = sm.nonparametric.lowess(r, r_time/60.0, frac=0.3)
+            
+        ######### need to remove the last two minutes of standing!!!!! #####################
             
     def heelTrajectory(self):
         bodySize = [332,391,50,-50]
@@ -240,7 +308,23 @@ class Trial:
         self.heel[:,0] = yp4*cos(a + h + k) + xp4*sin(a + h + k) + l1*sin(h) + l2*sin(h + k)
         self.heel[:,1] = yp4*sin(a + h +k) - xp4*cos(a + h + k) - l1*cos(h) - l2*cos(h + k)
         
-        
+    def rTrainTestbyGait(self):
+    # Summary: self.rAllJointByGait contains the r values in all gaits. 
+    #          This function splits it into training and testing parts.
+    #          The first 60 sec in training is cut away because there wasn't any trained decoder at that time.
+    
+    # Prerequisit: readConductor(), gaitSegmentation(), RValueByGaitAllJoint()
+    # Input: None
+    # Output: rTrain & rTest: 7 columns. The first one is time. The rest are right hip, right knee, right ankle, left hip, l knee, l ankle. Row number equals to the number of gaits/
+    #         rTrainMean, rTrainMedian, rTestMean, rTestMedian are all 6 column vectors. the mean/median r value across all gait cycles.
+    
+    # Date: 2017/12/12   
+        self.rTrain = cutArray(self.rAllJointByGait, self.events['tdmStart']+60, self.events['brainStart']-2)
+        self.rTest  = cutArray(self.rAllJointByGait, self.events['brainStart']+2, self.events['brainEnd']-5)
+        self.rTrainMean = np.nanmean(self.rTrain, axis=0)[1:,]
+        self.rTestMean = np.nanmean(self.rTest, axis=0)[1:,]
+        self.rTrainMedian = np.nanmedian(self.rTrain, axis=0)[1:,]
+        self.rTestMedian = np.nanmedian(self.rTest, axis=0)[1:,]
         
         
         
