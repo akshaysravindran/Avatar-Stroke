@@ -34,7 +34,7 @@ class Trial:
         # self.locationFile = -1 # 60Ch_EOGlayout.locs
         self.impedanceRemove = -1
         self.info = -1
-        self.gaitSegments_rmOutliers = -1 # gait cycles. each row contains the starting and ending time of one cycle
+        self.gaitSegments_rmOutliers = -1 # gait cycles. each row contains the starting and ending time of one cycle. Values are index in the decoderFile.
         self.gaitSpecgramMean = -1
         self.gaitSpecgramMeanFreqs = -1
         self.rCurveHip = -1 # regressed curve of the windowed r values
@@ -225,7 +225,7 @@ class Trial:
     # Summary: compute a r-value within each gait cycle
     # Prerequisit: t.events, gaitSegmentation()
     # Input: joint is a string of either 'hip', 'knee', or 'ankle'
-    # Output:
+    # Output: the first column is time (from the first column in decoderFile)
     # Date: 2017/12/12
         try:
             (joint=='hip' or joint=='knee' or joint=='ankle') and (side=='left' or side=='right')
